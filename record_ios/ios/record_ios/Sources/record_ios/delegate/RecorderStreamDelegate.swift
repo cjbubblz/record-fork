@@ -75,18 +75,28 @@ class RecorderStreamDelegate: NSObject, AudioRecordingStreamDelegate {
   }
   
   func stop(completionHandler: @escaping (String?) -> ()) {
+    // Capture engine ref and nil the property immediately so no other
+    // code can use it while we tear down on a background thread.
+    let engineRef = audioEngine
+    audioEngine = nil
+
     #if os(iOS)
-    if let audioEngine = audioEngine {
+    if let engineRef = engineRef {
       do {
-        try setVoiceProcessing(echoCancel: false, autoGain: false, audioEngine: audioEngine)
+        try setVoiceProcessing(echoCancel: false, autoGain: false, audioEngine: engineRef)
       } catch {}
     }
     #endif
-    
-    audioEngine?.inputNode.removeTap(onBus: bus)
-    audioEngine?.stop()
-    audioEngine = nil
-    
+
+    // Tear down on background thread to prevent main-thread hang.
+    // AVAudioEngine dealloc triggers AURemoteIO::~AURemoteIO which does
+    // synchronous mach_msg IPC, blocking the calling thread for 2+ seconds.
+    DispatchQueue.global(qos: .userInitiated).async { [bus] in
+      engineRef?.inputNode.removeTap(onBus: bus)
+      engineRef?.stop()
+      // ARC releases engineRef here, safely off the main thread.
+    }
+
     completionHandler(nil)
     onStop()
   }
